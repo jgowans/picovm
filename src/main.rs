@@ -133,8 +133,8 @@ fn main() {
         0xba, 0x08, 0x00, // mov dx, 0x8
         0x0f, 0x01, 0xc1, // vmcall
         0xbf, 0x00, 0x20, // mov di, 0x2000
-        0xbb, 0xf4, 0x00, // mov bx, 0xf4
-        0x2e, 0x89, 0x1d, // mov [cs:di], bx
+   //     0xbb, 0xf4, 0x00, // mov bx, 0xf4
+   //     0x2e, 0x89, 0x1d, // mov [cs:di], bx
         0xff, 0xe7, // jmp di
     ];
 
@@ -150,6 +150,7 @@ fn main() {
                     .unwrap(),
             )
             .unwrap();
+        [0xf4].as_ref().read_exact_volatile(&mut guest_memory.subslice(HALT_INSTRUCTION as usize, 1).unwrap()).unwrap();
     }
 
     let guest_memfd = if USE_GUEST_MEMFD {
