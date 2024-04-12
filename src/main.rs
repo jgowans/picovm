@@ -3,8 +3,11 @@
 
 use kvm_bindings::{kvm_enable_cap, kvm_userspace_memory_region, KVMIO};
 use kvm_ioctls::{Kvm, VcpuExit};
+use std::os::fd::AsRawFd;
+use std::fs::File;
 use std::ptr::null_mut;
 use std::time::Duration;
+use std::fs::OpenOptions;
 use vm_memory::{ReadVolatile, VolatileSlice};
 use vmm_sys_util::ioctl::{ioctl_with_ref, ioctl_with_val};
 use vmm_sys_util::syscall::SyscallReturnCode;
@@ -165,8 +168,15 @@ fn main() {
         0xff, 0xe7, // jmp di
     ];
 
-    let shared_memory = mmap_anonymous(GUEST_MEM_SIZE as usize);
 
+
+    let guest_ram = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open("/mnt/pkernfs/guest-ram")
+        .unwrap();
+
+    let shared_memory = mmap_file(GUEST_MEM_SIZE as usize, &guest_ram);
     unsafe {
         let guest_memory = VolatileSlice::new(shared_memory, GUEST_MEM_SIZE as usize);
         bootstrap_code
@@ -179,20 +189,6 @@ fn main() {
             .unwrap();
     }
 
-    let guest_memfd = SyscallReturnCode(unsafe {
-        ioctl_with_ref(
-            &vm,
-            KVM_CREATE_GUEST_MEMFD(),
-            &kvm_create_guest_memfd {
-                size: GUEST_MEM_SIZE,
-                flags: 0,
-                ..Default::default()
-            },
-        )
-    })
-    .into_result()
-    .unwrap();
-
     let memory_region = kvm_userspace_memory_region2 {
         slot: 0,
         flags: KVM_MEM_PRIVATE,
@@ -200,7 +196,7 @@ fn main() {
         memory_size: GUEST_MEM_SIZE,
         userspace_addr: shared_memory as u64,
         guest_memfd_offset: 0,
-        guest_memfd: guest_memfd as u32,
+        guest_memfd: guest_ram.as_raw_fd() as u32,
         ..Default::default()
     };
 
@@ -224,14 +220,14 @@ fn main() {
     vcpu_regs.rflags = 2;
     vcpu_fd.set_regs(&vcpu_regs).unwrap();
 
-    println!("guest_memfd: {}", guest_memfd);
+    println!("guest_memfd: {}", guest_ram.as_raw_fd());
     let mapped_guest_memfd = unsafe {
         libc::mmap(
             null_mut(),
             0x1000,
             libc::PROT_READ | libc::PROT_WRITE,
             libc::MAP_SHARED,
-            guest_memfd,
+            guest_ram.as_raw_fd(),
             0x2000,
         )
     };
@@ -272,7 +268,7 @@ fn main() {
                 // from the direct map).
                 unsafe {
                     let ret = libc::fallocate(
-                        guest_memfd,
+                        guest_ram.as_raw_fd(),
                         libc::FALLOC_FL_KEEP_SIZE | libc::FALLOC_FL_PUNCH_HOLE,
                         0x2000,
                         0x1000,
@@ -337,7 +333,7 @@ fn main() {
     panic!("Did not manage to halt within 5 KVM_RUN calls :(");
 }
 
-fn mmap_anonymous(size: usize) -> *mut u8 {
+fn mmap_file(size: usize, file: &File) -> *mut u8 {
     use std::ptr::null_mut;
 
     let addr = unsafe {
@@ -345,8 +341,8 @@ fn mmap_anonymous(size: usize) -> *mut u8 {
             null_mut(),
             size,
             libc::PROT_READ | libc::PROT_WRITE,
-            libc::MAP_ANONYMOUS | libc::MAP_SHARED | libc::MAP_NORESERVE,
-            -1,
+            libc::MAP_SHARED | libc::MAP_NORESERVE,
+            file.as_raw_fd(),
             0,
         )
     };
